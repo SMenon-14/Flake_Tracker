@@ -1,0 +1,29 @@
+name: Cleanup Old Images
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Runs daily at midnight UTC
+  workflow_dispatch:     # Allows manual trigger
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.x
+
+    - name: Install requests
+      run: pip install requests
+
+    - name: Run cleanup script
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # or your personal access token stored as a secret
+        # GITHUB_TOKEN: ${{ secrets.MY_PAT }}
+      run: python cleanup.py
