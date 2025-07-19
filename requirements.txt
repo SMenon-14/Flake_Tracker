@@ -1,0 +1,4 @@
+google_api_python_client==2.172.0
+gspread==6.2.1
+protobuf==6.31.1
+python-dotenv==1.1.1
