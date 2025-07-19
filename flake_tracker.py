@@ -3,9 +3,12 @@ from tkinter import filedialog
 from tkinter import ttk
 import os
 import gspread
+import requests
+import base64
+from datetime import datetime
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from dotenv import load_dotenv
 
 # These global variables store the values for the Flake Tracker main screen inputs
 horizontal_max = "0"
@@ -23,6 +26,7 @@ flake_id = "0"
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/presentations', 'https://www.googleapis.com/auth/drive']
 
 # These variables store the JSON information as well as the access information for the specific slides & sheets we want to edit (gathered from options screen & json input)
+json = ""
 creds = ""
 client = ""
 presentation_id = ""
@@ -30,6 +34,24 @@ sheet = ""
 slides_service = ""
 drive_service = ""
 pres_id_dict = {}
+
+# 🔒 Global configuration for github upload
+github_token = ""
+github_repo = ""
+github_branch = ""
+github_upload_path = ""
+
+def load_in_env_information(filename):
+    load_dotenv(filename) # <--- load in our .env file
+    global github_token, github_repo, github_branch, github_upload_path, json
+
+    # Now you can use os.getenv to access them
+    github_token = os.getenv("GITHUB_TOKEN")
+    github_repo = os.getenv("GITHUB_REPO")
+    github_branch = os.getenv("GITHUB_BRANCH")
+    github_upload_path = os.getenv("GITHUB_UPLOAD_PATH")
+    json = os.getenv("JSON")
+
 
 def process_presentation_IDs(spreadsheet_name, sheet_name):
     """This method takes in a spreadsheet name and sheet name assuming it contains the two columns 'Slideshow_Name' and
@@ -130,19 +152,20 @@ def load_settings_from_inputs(pres_id, spreadsheet_name, sheet_name):
     presentation_id = pres_id
     sheet = client.open(spreadsheet_name).worksheet(sheet_name)
 
-def setup_service_acct():
-    """"A method to set global variables for google APIs access. Connects to drive after setting up JSON service 
-        account.
+def setup_env_info():
+    """"A method to set global variables for google APIs access and GitHub access. Connects to drive after setting up 
+        JSON service account.
     """
-    global creds, client, slides_service, drive_service
-    json = get_dropdown_value(json_select, "jsons.txt") # <--- get json from dropdown
+    global creds, client, slides_service, drive_service, json
+    env_filename = get_dropdown_value(env_select, "env_filenames.txt") # <--- get .env filename from dropdown
     # Set up service account
+    load_in_env_information(env_filename)
     creds = Credentials.from_service_account_file(json, scopes=SCOPES) 
     client = gspread.authorize(creds)
     slides_service = build('slides', 'v1', credentials=creds)
     drive_service = build('drive', 'v3', credentials=creds)
 
-    json_selector_root.destroy() # <--- destroy selector page
+    env_selector_root.destroy() # <--- destroy selector page
 
 
 def shutdown_options_screen():
@@ -159,30 +182,48 @@ def shutdown_options_screen():
 
     options_root.destroy() # <--- Close window
 
-
-def upload_image_to_drive(file_path, drive_service):
-    """ Take in a file path to an image, upload it to the service account drive, make the file public and get a URL to 
-        access it.
+def upload_image_to_github(image_path):
+    """
+    Uploads an image to a public GitHub repo and returns a raw URL to access it
 
     Args:
-        file_path (str): The path to the image that we want to upload to drive
-        drive_service (googleapiclient.discovery.Resource): A resource to interact with the drive API (connected to 
-        the service account email)
+        image_path (str): Local path to the image that we want to upload
 
     Returns:
-        str: a URL to the image file uploaded to drive.
+        str: Public raw.githubusercontent.com URL
     """
-    # Upload file
-    file_metadata = {
-        'name': os.path.basename(file_path),
-        'mimeType': 'image/png'
+    global github_repo, github_branch, github_token, github_upload_path
+    filename = os.path.basename(image_path) # <--- get the filename from the image path
+    name, ext = os.path.splitext(filename) # <--- split the name of the file and the file extension (e.g. ".png" or ".jpg")
+    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S") # <--- get the timestamp to make this filename unique
+    unique_filename = f"{name}_{timestamp}{ext}" # <--- combine our extracted information to get a fully unique filename
+
+    github_api_url = f"https://api.github.com/repos/{github_repo}/contents/{github_upload_path}/{unique_filename}" # <--- format the github api url
+
+    # Encode the image to upload
+    with open(image_path, "rb") as f:
+        content = base64.b64encode(f.read()).decode("utf-8")
+
+    # Create upload request information
+    headers = {
+        "Authorization": f"token {github_token}", # <--- what's the personal access github token we're using?
+        "Accept": "application/vnd.github+json"
     }
-    media = MediaFileUpload(file_path, resumable=True)
-    uploaded_file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    data = {
+        "message": f"Upload {unique_filename}", # <--- what's the filename of our upload?
+        "content": content, # <--- what's our encoded image?
+        "branch": github_branch # <--- what branch of our repo are we uploading to?
+    }
 
-    drive_service.permissions().create(fileId=uploaded_file['id'], body={'role': 'reader', 'type': 'anyone'}).execute() # <--- make the file public
+    response = requests.put(github_api_url, headers=headers, json=data) # <--- submit upload request
 
-    return f"https://drive.google.com/uc?id={uploaded_file['id']}" # <--- return link to file
+
+    if response.status_code == 201: # <--- if the upload goes well
+        # Return raw.githubusercontent URL
+        raw_url = f"https://raw.githubusercontent.com/{github_repo}/{github_branch}/{github_upload_path}/{unique_filename}"
+        return raw_url
+    else: # <--- if something went wrong with the upload
+        raise Exception(f"GitHub upload failed: {response.status_code} {response.json()}")
 
 def create_add_image_to_slide_request(image_url, slide_id, height, width, x_pos, y_pos, x_scale, y_scale):
     """ Creates a request dictionary to add a given image onto a given slide with the given specifications.
@@ -422,9 +463,9 @@ def push_to_slides(image1_url, image2_url, flake_id='1', nav_instr='1', size='1'
     presentation_after_duplication = slides_service.presentations().get(presentationId=presentation_id).execute() # <--- pull the new version of the slideshow down with the duplicated slide
     updated_slides = presentation_after_duplication['slides'] # <--- get the list of slides from the new version of the presentation
     last_slide_index = len(updated_slides) # <--- get length of the updated list of slides
+    move_slide(new_slide_id, last_slide_index) # <--- move the new slide to the end of the slideshow
     fill_text(new_slide_id, flake_id, size, nav_instr) # <--- update the text on the new slide
     add_images_to_slide(image1_url, image2_url, new_slide_id) # <--- add images to the new slide
-    move_slide(new_slide_id, last_slide_index) # <--- move the new slide to the end of the slideshow
 
 def push_to_sheets(flake_id, date, chip_num, flake_num, hmax, vmax, dframes, lframes, layers):
     """ Method to push gathered information onto google sheets.
@@ -457,13 +498,14 @@ def open_error_window(e):
     #Add text to the popup window 
     tk.Label(eroot, text="AN ERROR OCCURED. PLEASE OPEN VSCODE TO INVESTIGATE.", fg='red').pack()
     tk.Label(eroot, text=e, fg='red').pack() # <--- place the error message on the popup window
+    print(e)
     eroot.mainloop() # <--- open window
 
 def submit_data():
     """ Method called on push of submit button in GUI, pushes all data entered in GUI onto slides and sheets for a given flake.
     """
     try:
-        global flake_id, down_from_TR, left_from_TR, horizontal_max, vertical_max, approx_num_layers
+        global flake_id, down_from_TR, left_from_TR, horizontal_max, vertical_max, approx_num_layers, delete_url_list
 
         #Pull the values from the text entries and parse the flake id to get sample & flake numbers & date
         down_from_TR = entry_down_TR.get()
@@ -482,9 +524,11 @@ def submit_data():
         formatted_navigation_string = format_navigation_string(float(down_from_TR), float(left_from_TR)) # <--- format the navigation string into plain english from the navigation instruction numbers
         formatted_size_string = f'{horizontal_max} by {vertical_max}' # <--- format size string in plain english
 
-        #Upload images to drive and get their urls to use when adding them to slides
-        image1_url = upload_image_to_drive(image_1_path, drive_service)
-        image2_url = upload_image_to_drive(image_2_path, drive_service)
+        #Upload images to imgbb and get their urls to use when adding them to slides
+        image1_url = upload_image_to_github(image_1_path)
+        print(image1_url)
+        image2_url = upload_image_to_github(image_2_path)
+        print(image2_url)
 
         # Print out info to debug
         #print("Flake ID:", flake_id)
@@ -500,6 +544,7 @@ def submit_data():
         #Perform the actual upload to sheets and slides
         push_to_sheets(flake_id, date, sample_num, flake_num, horizontal_max, vertical_max, down_from_TR, left_from_TR, approx_num_layers)
         push_to_slides(image1_url, image2_url, flake_id=flake_id, nav_instr=formatted_navigation_string, size=formatted_size_string)
+
 
     except (Exception) as e:
         open_error_window(e) # <--- handle any errors by opening up an error popup window
@@ -548,23 +593,26 @@ def delete_last_entry():
        print("No slides found in the presentation. Close this window to continue.", 'red') # <--- prints a message showing there were no slides to be deleted 
 
 
-json_selector_root = tk.Tk()
-json_selector_root.title("Select JSON")
-json_selector_root.geometry("600x100")
+env_selector_root = tk.Tk()
+env_selector_root.title("Select .env File")
+env_selector_root.geometry("600x100")
 
-# Add in json select field
-default_json = tk.StringVar()
-default_json.set('DEFAULT JSON')
-tk.Label(json_selector_root, text="Path to Service Account JSON:").pack()
+# Add in env select field
+
+tk.Label(env_selector_root, text="Name of .env File to Use:").pack()
 # Initial options
-json_options = load_options("jsons.txt")
+default_env = tk.StringVar()
+env_options = load_options("env_filenames.txt")
+print(env_options)
+print(env_options[0])
+default_env.set(env_options[0])
 # Combobox widget
-json_select = ttk.Combobox(json_selector_root, values=json_options, state="normal", textvariable=default_json, width=40)
-json_select.pack()
+env_select = ttk.Combobox(env_selector_root, values=env_options, state="normal", textvariable=default_env, width=40)
+env_select.pack()
 
-tk.Button(json_selector_root, text="Next", command=setup_service_acct).pack(pady=5)
+tk.Button(env_selector_root, text="Next", command=setup_env_info).pack(pady=5)
 
-json_selector_root.mainloop()
+env_selector_root.mainloop()
 
 
 pres_id_dict = process_presentation_IDs("Presentation IDs", "Sheet1")
