@@ -30,7 +30,7 @@ def list_files():
     resp.raise_for_status() # <---
     return resp.json() # <--- return our list
 
-def list_jpg_files(all_files):
+def filter_jpg_files(all_files):
     """ Filters a list of files to only contain the .jpg entries.
 
     Args:
@@ -84,7 +84,7 @@ def delete_file(path, sha):
 def main():
     """
     """
-    files = list_jpg_files()
+    files = filter_jpg_files(list_files())
     now = datetime.utcnow()
     cutoff = now - timedelta(hours=MAX_AGE_HOURS)
 
