@@ -1,1 +1,2 @@
-This directory exists for image uploads created while flake-tracker desktop is in use. The images older than 12 hours are cleared with a workflow script that runs every hour.
+This directory exists for image uploads created while flake-tracker desktop is in use. 
+The images older than 12 hours are cleared with a workflow script that runs every hour.
